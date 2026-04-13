@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>아이템 툴팁 시뮬레이터 v3.4</title>
+    <style>
+        :root { --bg: #121212; --card-bg: #1e1e1e; --accent: #ffcc00; --text: #ffffff; }
+        body { font-family: 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); padding: 20px; display: flex; gap: 20px; }
+        .config-panel { width: 480px; background: var(--card-bg); padding: 20px; border-radius: 10px; height: 92vh; overflow-y: auto; box-shadow: 5px 0 15px rgba(0,0,0,0.5); }
+        h2 { border-bottom: 2px solid #444; padding-bottom: 10px; color: var(--accent); margin-top: 0; }
+        .input-group { margin-bottom: 15px; border: 1px solid #333; padding: 12px; border-radius: 5px; background: #252525; }
+        label { display: block; font-size: 12px; color: #aaa; margin-bottom: 5px; font-weight: bold; }
+        input, select { width: 100%; padding: 10px; background: #000; border: 1px solid #444; color: #fff; box-sizing: border-box; border-radius: 4px; }
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+        button { width: 100%; padding: 12px; margin-top: 10px; background: var(--accent); border: none; font-weight: bold; cursor: pointer; border-radius: 4px; transition: 0.2s; }
+        button:hover { background: #e6b800; }
+        .preview-panel { flex: 1; display: flex; flex-direction: column; align-items: center; }
+        #tooltipCanvas { border: 2px solid #555; background: #000; box-shadow: 0 0 30px rgba(0,0,0,0.8); border-radius: 8px; }
+        .controls { margin-top: 20px; width: 100%; max-width: 350px; background: #222; padding: 20px; border-radius: 10px; }
+        .filter-group { border: 1px solid var(--accent); padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="config-panel">
+    <h2>1. 마스터 데이터 설정</h2>
+    
+    <div class="input-group">
+        <label>설정 모드 선택</label>
+        <select id="targetType" onchange="toggleConfigMode()">
+            <option value="base">아이템 등록 (이름/이미지/기본옵션)</option>
+            <option value="grade">등급별 공통 가중치 설정</option>
+            <option value="enchant">부위별 강화 상승치 설정</option>
+        </select>
+    </div>
+
+    <div id="configInputs" class="input-group">
+        <div id="nameInputArea">
+            <label>아이템 이름 (예: 모니오의 지팡이)</label>
+            <input type="text" id="itemNameInput" placeholder="이름을 입력하세요">
+        </div>
+
+        <div id="subKeyArea" style="margin-top:10px;">
+            <label id="subLabel">대상 선택</label>
+            <select id="subKey"></select>
+        </div>
+
+        <div id="enchantPartArea" style="display:none; margin-top:10px;">
+            <label>강화 적용 부위</label>
+            <select id="enchantPartSelect"></select>
+        </div>
+        
+        <div class="stat-grid" style="margin-top:15px;">
+            <div><label>공격력</label><input type="number" id="s_atk" value="0"></div>
+            <div><label>방어력</label><input type="number" id="s_def" value="0"></div>
+            <div><label>순발력</label><input type="number" id="s_agi" value="0"></div>
+            <div><label>체력</label><input type="number" id="s_hp" value="0"></div>
+            <div><label>크리</label><input type="number" id="s_crit" value="0"></div>
+            <div><label>회피</label><input type="number" id="s_eva" value="0"></div>
+            <div><label>관통</label><input type="number" id="s_pen" value="0"></div>
+            <div><label>명중</label><input type="number" id="s_acc" value="0"></div>
+            <div><label>실드</label><input type="number" id="s_shd" value="0"></div>
+        </div>
+
+        <div id="imageUploadArea" style="margin-top:15px;">
+            <label>아이콘 이미지 업로드</label>
+            <input type="file" id="itemImgFile" accept="image/*">
+        </div>
+        <button onclick="saveData()">데이터 저장 / 업데이트</button>
+        <button onclick="clearCurrentItem()" style="background:#c0392b; margin-top:5px;">현재 아이템 삭제</button>
+    </div>
+</div>
+
+<div class="preview-panel">
+    <h2>2. 최종 아이템 시뮬레이션</h2>
+    <div class="controls">
+        <div class="filter-group">
+            <label style="color:var(--accent)">🔍 부위 필터 (먼저 선택)</label>
+            <select id="filterPart" onchange="refreshItemSelect()">
+                <option value="all">전체 부위 보기</option>
+            </select>
+        </div>
+
+        <label>저장된 아이템 선택</label>
+        <select id="selBase" onchange="drawTooltip()"></select>
+        
+        <label>등급 선택</label>
+        <select id="selGrade" onchange="drawTooltip()"></select>
+        
+        <label>강화 단계</label>
+        <select id="selEnchant" onchange="drawTooltip()"></select>
+    </div>
+    <canvas id="tooltipCanvas" width="340" height="520"></canvas>
+    <button style="max-width:340px; background: #27ae60;" onclick="downloadTooltip()">툴팁 이미지 저장</button>
+</div>
+
+<script>
+    let db = JSON.parse(localStorage.getItem('itemSimDB_v3_4')) || { grade: {}, enchant: {}, base: {} };
+    const stats = ['atk', 'def', 'agi', 'hp', 'crit', 'eva', 'pen', 'acc', 'shd'];
+    const statNames = ['공격력', '방어력', '순발력', '체력', '크리', '회피', '관통', '명중', '실드'];
+    
+    // 노말 등급 추가
+    const gradeList = ['노말', '고급', '레어', '유물', '전설', '초월', '고대', '신화'];
+    const partList = ['무기류', '투구류', '갑옷류', '토템류', '장갑', '팔찌/부적', '목걸이', '반지', '귀걸이'];
+    
+    // 노말 색상은 흰색으로 지정
+    const gradeColors = { 
+        '노말': '#FFFFFF', 
+        '고급': '#00FF00', 
+        '레어': '#FFFF00', 
+        '유물': '#FF8C00', 
+        '전설': '#A020F0', 
+        '초월': '#00FFFF', 
+        '고대': '#FF69B4', 
+        '신화': '#FF0000' 
+    };
+
+    window.onload = () => { 
+        initFilterOptions();
+        toggleConfigMode(); 
+        refreshSelects(); 
+        drawTooltip(); 
+    };
+
+    function initFilterOptions() {
+        const fp = document.getElementById('filterPart');
+        partList.forEach(p => fp.add(new Option(p, p)));
+    }
+
+    function toggleConfigMode() {
+        const mode = document.getElementById('targetType').value;
+        const subKey = document.getElementById('subKey');
+        const enchPart = document.getElementById('enchantPartArea');
+        const nameInput = document.getElementById('nameInputArea');
+        const imgArea = document.getElementById('imageUploadArea');
+        subKey.innerHTML = '';
+
+        if(mode === 'grade') {
+            gradeList.forEach(g => subKey.add(new Option(g, g)));
+            enchPart.style.display = 'none'; nameInput.style.display = 'none'; imgArea.style.display = 'none';
+        } else if(mode === 'enchant') {
+            for(let i=1; i<=10; i++) subKey.add(new Option(i+'강', i));
+            const epSelect = document.getElementById('enchantPartSelect');
+            epSelect.innerHTML = ''; partList.forEach(p => epSelect.add(new Option(p, p)));
+            enchPart.style.display = 'block'; nameInput.style.display = 'none'; imgArea.style.display = 'none';
+        } else {
+            partList.forEach(p => subKey.add(new Option(p, p)));
+            enchPart.style.display = 'none'; nameInput.style.display = 'block'; imgArea.style.display = 'block';
+        }
+    }
+
+    function saveData() {
+        const mode = document.getElementById('targetType').value;
+        const sub = document.getElementById('subKey').value;
+        const data = {};
+        stats.forEach(s => data[s] = parseFloat(document.getElementById('s_'+s).value) || 0);
+
+        if(mode === 'enchant') {
+            const part = document.getElementById('enchantPartSelect').value;
+            if(!db.enchant[part]) db.enchant[part] = {};
+            db.enchant[part][sub] = data;
+        } else if(mode === 'base') {
+            const name = document.getElementById('itemNameInput').value.trim();
+            if(!name) return alert("아이템 이름을 입력해주세요!");
+            data.customName = name;
+            data.partType = sub;
+            const file = document.getElementById('itemImgFile').files[0];
+            if(file) {
+                const reader = new FileReader();
+                reader.onload = (e) => { data.img = e.target.result; db.base[name] = data; finishSave(); };
+                reader.readAsDataURL(file); return;
+            }
+            if(db.base[name] && db.base[name].img) data.img = db.base[name].img;
+            db.base[name] = data;
+        } else {
+            db.grade[sub] = data;
+        }
+        finishSave();
+    }
+
+    function clearCurrentItem() {
+        const name = document.getElementById('itemNameInput').value.trim();
+        if(db.base[name] && confirm(`[${name}] 아이템을 삭제하시겠습니까?`)) {
+            delete db.base[name];
+            finishSave();
+        }
+    }
+
+    function finishSave() {
+        localStorage.setItem('itemSimDB_v3_4', JSON.stringify(db));
+        alert("성공적으로 반영되었습니다."); refreshSelects(); drawTooltip();
+    }
+
+    function refreshSelects() {
+        refreshItemSelect();
+        const sg = document.getElementById('selGrade');
+        const se = document.getElementById('selEnchant');
+        sg.innerHTML = ''; se.innerHTML = '';
+        gradeList.forEach(g => sg.add(new Option(g, g)));
+        for(let i=0; i<=10; i++) se.add(new Option(i+'강', i));
+    }
+
+    // 부위 필터에 따라 아이템 목록 갱신
+    function refreshItemSelect() {
+        const sb = document.getElementById('selBase');
+        const filter = document.getElementById('filterPart').value;
+        sb.innerHTML = '';
+        
+        const allItems = Object.values(db.base);
+        const filtered = filter === 'all' ? allItems : allItems.filter(item => item.partType === filter);
+
+        if(filtered.length === 0) {
+            sb.add(new Option("아이템이 없습니다", ""));
+        } else {
+            filtered.forEach(item => sb.add(new Option(item.customName, item.customName)));
+        }
+        drawTooltip();
+    }
+
+    function drawTooltip() {
+        const canvas = document.getElementById('tooltipCanvas');
+        const ctx = canvas.getContext('2d');
+        const itemName = document.getElementById('selBase').value;
+        const gKey = document.getElementById('selGrade').value;
+        const eKey = document.getElementById('selEnchant').value.replace('강','');
+        const gColor = gradeColors[gKey] || '#ffffff';
+
+        ctx.fillStyle = "#000"; ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.strokeStyle = "#444"; ctx.lineWidth = 4; ctx.strokeRect(5,5,canvas.width-10,canvas.height-10);
+
+        if(!itemName || !db.base[itemName]) {
+            ctx.fillStyle = "#555"; ctx.textAlign = "center";
+            ctx.fillText("아이템을 선택해주세요", canvas.width/2, canvas.height/2);
+            return;
+        }
+
+        const base = db.base[itemName];
+        const grade = db.grade[gKey] || {};
+        const enchPart = base.partType;
+        const ench = (db.enchant[enchPart] && db.enchant[enchPart][eKey]) ? db.enchant[enchPart][eKey] : {};
+
+        if(base.img) {
+            const img = new Image(); img.src = base.img;
+            img.onload = () => ctx.drawImage(img, canvas.width/2-45, 30, 90, 90);
+        }
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffffff"; ctx.font = "bold 20px Malgun Gothic";
+        ctx.fillText(`${base.customName} [+${eKey}]`, canvas.width/2, 160);
+        
+        ctx.font = "16px Malgun Gothic"; ctx.fillStyle = "#cfcfcf";
+        ctx.fillText(`종류 : ${base.partType}`, canvas.width/2, 190);
+        
+        ctx.fillStyle = gColor; ctx.font = "bold 18px Malgun Gothic";
+        ctx.fillText(`${gKey} 등급`, canvas.width/2, 215);
+
+        ctx.strokeStyle = "#333"; ctx.beginPath(); ctx.moveTo(30, 230); ctx.lineTo(310, 230); ctx.stroke();
+
+        ctx.textAlign = "left"; ctx.font = "bold 15px Malgun Gothic";
+        let y = 265;
+        stats.forEach((s, i) => {
+            const val = (base[s]||0) + (grade[s]||0) + (ench[s]||0);
+            if(val !== 0) {
+                ctx.fillStyle = "#ffffff"; ctx.fillText(statNames[i], 50, y);
+                ctx.textAlign = "right"; ctx.fillStyle = gColor; ctx.fillText("+" + val, 290, y);
+                ctx.textAlign = "left"; y += 28;
+            }
+        });
+    }
+
+    function downloadTooltip() {
+        const name = document.getElementById('selBase').value || 'item';
+        const link = document.createElement('a');
+        link.download = `${name}_stats.png`;
+        link.href = document.getElementById('tooltipCanvas').toDataURL();
+        link.click();
+    }
+</script>
+
+</body>
+</html>
